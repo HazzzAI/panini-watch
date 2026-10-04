@@ -29,7 +29,11 @@ Single "missing card" listings (`cartas faltantes`, `mancanti`, …) are ignored
    min); the bot tells you when it is done. After that you only get alerts for what is *new*.
 4. Optional: **`install_autostart.bat`** starts it hidden every time you log in to Windows.
 
-> To run it **24/7 without your PC**, put it on a small server — see **[DEPLOY.md](DEPLOY.md)** (one command).
+> **Free 24/7 mode (no PC needed)**: it runs on GitHub Actions — repo `HazzzAI/panini-watch`, workflow `watch.yml`.
+> Every run (back-to-back, ~9 min each) checks all shops, sends alerts and answers bot commands; the database lives
+> on the `state` branch; the bot token is an encrypted repository secret. Watch it at
+> https://github.com/HazzzAI/panini-watch/actions . Do **not** also run `run.bat` on the PC (one listener per bot).
+> A paid-server alternative (instant replies) is in [DEPLOY.md](DEPLOY.md).
 
 ## Using the bot
 
