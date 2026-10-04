@@ -82,6 +82,7 @@ class Config:
     digest_threshold: int
     skip_words: list[str]
     skip_product: list[str] = field(default_factory=list)
+    flood_limit: int = 40
 
     def enabled_sites(self, store: Store) -> list[Site]:
         return [s for s in self.sites.values() if site_enabled(store, s)]
@@ -122,6 +123,7 @@ def load_config(path: Path) -> Config:
         alerts=raw.get("alerts", {}), digest_threshold=int(raw.get("digest_threshold", 6)),
         skip_words=skip_words,
         skip_product=[w.lower() for w in raw.get("skip_product_words", [])],
+        flood_limit=int(raw.get("flood_limit", 40)),
     )
 
 
