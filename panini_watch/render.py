@@ -1,6 +1,8 @@
 """Turn products and events into Telegram messages (HTML parse mode)."""
 from __future__ import annotations
 
+import re
+
 from .models import Product
 from .sites import Site
 from .telegram import button, esc, esc_attr, keyboard
@@ -71,3 +73,50 @@ def result_page(title: str, rows: list[tuple[Site, Product]], *, page: int, per_
     if not chunk:
         lines.append("Nothing matched.")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------------------------
+# One product that appears in several shops at once = ONE message
+# ---------------------------------------------------------------------------------------------
+def group_key(p: Product) -> str:
+    sku = (p.sku or "").split("_")[0].upper()
+    if len(sku) >= 6 and re.search(r"\d", sku):
+        return "sku:" + sku
+    return "name:" + re.sub(r"[^a-z0-9]+", "", p.name.lower())
+
+
+_HEAD = {"new": ("🆕", "New listing"), "discount": ("🏷", "DISCOUNT"), "restock": ("🔔", "Back in stock"),
+         "price_drop": ("💸", "Price drop"), "sold_out": ("🚫", "Sold out")}
+
+
+def group_card(kind: str, evs: list) -> tuple[str, dict]:
+    """evs: events of the same product (one per shop). Single shop -> the normal card."""
+    first = evs[0]
+    if len(evs) == 1:
+        extra = ""
+        if kind == "price_drop" and first.old_price:
+            extra = "was " + esc(Product(first.site.key, "", "", "", price=first.old_price,
+                                         currency=first.product.currency).price_text())
+        return product_card(kind, first.site, first.product, extra=extra, category=first.category)
+    icon, label = _HEAD.get(kind, ("ℹ️", kind))
+    lines = [f"{icon} <b>{label} — {len(evs)} shops</b>", "", f"<b>{esc(first.product.name)}</b>", ""]
+    for e in evs:
+        p = e.product
+        lines.append(f'{e.site.flag} <a href="{esc_attr(p.url)}">{esc(e.site.name)}</a>  '
+                     f'{STOCK_ICON[p.in_stock]} {price_line(p)}')
+    return "\n".join(lines), keyboard([[button("🔗 Open first shop", url=first.product.url)]])
+
+
+def group_digest(kind: str, groups: list, *, per_message: int = 10) -> list[str]:
+    icon, label = _HEAD.get(kind, ("ℹ️", kind))
+    out = []
+    for i in range(0, len(groups), per_message):
+        chunk = groups[i:i + per_message]
+        lines = [f"{icon} <b>{len(groups)} {label.lower()} alerts</b>" + (" (cont.)" if i else ""), ""]
+        for g in chunk:
+            p = g[0].product
+            flags = "".join(e.site.flag for e in g)
+            lines.append(f'{STOCK_ICON[p.in_stock]} <a href="{esc_attr(p.url)}">{esc(p.name[:80])}</a> {flags} — '
+                         f'{price_line(p)}')
+        out.append("\n".join(lines))
+    return out
