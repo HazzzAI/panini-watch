@@ -19,6 +19,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   run:
@@ -54,6 +55,7 @@ jobs:
 
       - name: Work
         run: |
+          date +%s > /tmp/start_ts
           MODE="${{ github.event.inputs.mode }}"
           if [ "${{ github.event.schedule }}" = "17 3 * * 1" ]; then MODE=discover; fi
           if [ "$MODE" = "discover" ]; then
@@ -74,3 +76,16 @@ jobs:
           git add panini.db
           git commit -q -m "state $(date -u +%FT%TZ)"
           git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" state
+
+      # Start the next run right away instead of waiting for GitHub's (best-effort) cron. Only chain after a
+      # normal-length run, so a crash can never turn into a tight loop; the cron stays as a safety net.
+      - name: Chain next run
+        if: always() && github.event.schedule != '17 3 * * 1'
+        run: |
+          START=$(cat /tmp/start_ts 2>/dev/null || date +%s)
+          ELAPSED=$(( $(date +%s) - START ))
+          echo "run lasted ${ELAPSED}s"
+          if [ "$ELAPSED" -gt 240 ] && [ "${{ github.event.inputs.mode }}" != "discover" ]; then
+            sleep 15
+            curl -fsS -X POST               -H "Authorization: Bearer ${{ github.token }}" -H "Accept: application/vnd.github+json"               "https://api.github.com/repos/${{ github.repository }}/actions/workflows/watch.yml/dispatches"               -d '{"ref":"main","inputs":{"mode":"tick"}}' && echo "next run queued"
+          fi
