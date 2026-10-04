@@ -8,15 +8,18 @@ discovery_refresh_days: 7       # re-discover football categories on each shop t
 
 alerts:
   new_product: true      # a product we have never seen before
-  restock: true          # sold out -> available again
+  restock: false         # sold out -> available again (off: you only want new listings + discounts)
   discount: true         # product is on sale (strike-through price) or the discount got bigger
   discount_min_pct: 10   # only announce discounts of at least this %
-  price_drop: true       # price went down (quiet price cuts without a sale tag)
+  price_drop: false      # price went down without a sale tag (off by default)
   price_drop_min_pct: 10 # ignore tiny price moves
   sold_out: false        # available -> sold out (noisy, off by default)
 
 # A message with more than this many new items on one shop is sent as one digest
 digest_threshold: 6
+
+# If one run finds more new products than this (a shop reshuffling its catalogue), send ONE summary instead
+flood_limit: 40
 
 # Extra football words that should always count (added to the built-in multilingual list)
 extra_football_keywords: []
