@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+from . import football
 from .browser import Fetcher
 from .models import Product
 from .sites import Config, Site, discover, fetch_source, keep_product, site_enabled
@@ -35,6 +36,8 @@ class Monitor:
         self.last_cycle: float | None = None
         self.on_cycle: Callable[[list[dict]], Awaitable[None]] | None = None
         self.tr = None            # i18n.Translator (set by the app); product names become English
+        self.notify_batch = None      # async (events across all shops) -> bool ; groups same product across shops
+        self._batch: dict[str, list[Event]] = {}
         self.allow_discovery = True   # False in short scheduled runs (a weekly job re-discovers instead)
         self._extra_kw = [k for k in cfg.raw.get("extra_football_keywords", []) if k]
 
@@ -73,6 +76,7 @@ class Monitor:
                     return summary
 
             found: dict[str, tuple[Product, str, bool]] = {}
+            exempt: set[str] = set()          # products from your own /watch keywords are never filtered
             complete_sources: list[int] = []
             for src in self.store.sources(site.key):
                 summary["sources"] += 1
@@ -96,6 +100,8 @@ class Monitor:
                 for p in L.products:
                     if not keep_product(p, src["mode"], self._extra_kw, self.cfg.skip_product):
                         continue
+                    if src["mode"] == "none":
+                        exempt.add(p.pid)
                     prev = found.get(p.pid)
                     found[p.pid] = (p, src_name, (prev[2] and silent) if prev else silent)
                 if L.complete and not src["baselined"]:
@@ -112,6 +118,10 @@ class Monitor:
                         p.name = known[p.pid]["name"]     # translation busy: keep the English name we have
                     else:                                      # new product while translators are paused
                         p.name = self.tr.rough(p.name)       # glossary English now; retried next cycle
+            if found and self.cfg.skip_product:       # single "missing card" listings, also after translation
+                for pid in [k for k, (p, _, _) in found.items() if k not in exempt and
+                            any(w in football._norm(p.name) for w in self.cfg.skip_product)]:
+                    del found[pid]
             events = self._diff(site, found)
             self.store.upsert_products((p, name, silent) for p, name, silent in found.values())
             for sid in complete_sources:
@@ -122,7 +132,9 @@ class Monitor:
                 self.store.log_event(site.key, e.product.pid, e.type, e.product.name)
             if events and not self.muted():
                 events = [e for e in events if self.alert_on(e.type)]
-                if events:
+                if events and self.notify_batch:
+                    self._batch[site.key] = events          # delivered together after all shops are done
+                elif events:
                     ok = await self.notify(site, events)
                     if not ok:
                         self._queue_pending(site, events)
@@ -200,6 +212,12 @@ class Monitor:
                 out.append(r)
         self.last_cycle = time.time()
         self.store.set("last_cycle", str(self.last_cycle))
+        if self.notify_batch and self._batch:
+            batch, self._batch = self._batch, {}
+            allev = [e for evs in batch.values() for e in evs]
+            if not await self.notify_batch(allev):
+                for key, evs in batch.items():
+                    self._queue_pending(self.cfg.sites[key], evs)
         return out
 
     async def run_forever(self) -> None:
