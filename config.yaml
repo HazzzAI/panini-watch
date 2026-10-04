@@ -1,0 +1,76 @@
+# Panini Watch configuration
+# Secrets (Telegram token / chat id) live in .env, NOT here.
+
+check_interval_minutes: 10      # how often every enabled shop is re-checked
+page_delay_seconds: [1.0, 2.5]  # polite pause between two page loads on the same shop
+sites_in_parallel: 5            # shops scanned at the same time (each shop still gets one page at a time)
+discovery_refresh_days: 7       # re-discover football categories on each shop this often
+
+alerts:
+  new_product: true      # a product we have never seen before
+  restock: true          # sold out -> available again
+  discount: true         # product is on sale (strike-through price) or the discount got bigger
+  discount_min_pct: 10   # only announce discounts of at least this %
+  price_drop: true       # price went down (quiet price cuts without a sale tag)
+  price_drop_min_pct: 10 # ignore tiny price moves
+  sold_out: false        # available -> sold out (noisy, off by default)
+
+# A message with more than this many new items on one shop is sent as one digest
+digest_threshold: 6
+
+# Extra football words that should always count (added to the built-in multilingual list)
+extra_football_keywords: []
+
+# ---------------------------------------------------------------------------------------------
+# Shops. All are official Panini storefronts (from paninistore.com/find-my-shop).
+#   kind: magento (most shops) | shopify (Colombia)
+#   enabled: false -> ignored until you turn it on (Telegram: /sites)
+#   categories: extra category URLs to always watch (in addition to auto-discovered ones)
+#   searches:   extra search terms to watch on that shop (in addition to categories)
+#   skip_categories: words; any discovered category whose name/URL contains one is ignored
+# ---------------------------------------------------------------------------------------------
+sites:
+  es:    {name: "Spain",            flag: "🇪🇸", base: "https://www.panini.es/shp_esp_es/",            locale: "es-ES", currency: "€"}
+  it:    {name: "Italy",            flag: "🇮🇹", base: "https://www.panini.it/shp_ita_it/",            locale: "it-IT", currency: "€"}
+  fr:    {name: "France",           flag: "🇫🇷", base: "https://www.panini.fr/shp_fra_fr/",            locale: "fr-FR", currency: "€"}
+  de:    {name: "Germany / Austria",flag: "🇩🇪", base: "https://www.panini.de/shp_deu_de/",            locale: "de-DE", currency: "€"}
+  uk:    {name: "UK / Ireland",     flag: "🇬🇧", base: "https://www.panini.co.uk/shp_gbr_en/",         locale: "en-GB", currency: "£"}
+  pt:    {name: "Portugal",         flag: "🇵🇹", base: "https://www.paniniportugal.com/shp_prt_pt/",   locale: "pt-PT", currency: "€"}
+  nl:    {name: "Netherlands",      flag: "🇳🇱", base: "https://www.panininederland.com/shp_nld_nl/",  locale: "nl-NL", currency: "€"}
+  be:    {name: "Belgium / Lux.",   flag: "🇧🇪", base: "https://www.paninibelgium.com/shp_bel_nl/",    locale: "nl-BE", currency: "€"}
+  ch:    {name: "Switzerland",      flag: "🇨🇭", base: "https://www.panini.ch/shp_che_de/",            locale: "de-CH", currency: "CHF"}
+  pl:    {name: "Poland",           flag: "🇵🇱", base: "https://www.panini.pl/shp_pol_pl/",            locale: "pl-PL", currency: "zł"}
+  ro:    {name: "Romania",          flag: "🇷🇴", base: "https://www.panini.ro/shp_rou_ro/",            locale: "ro-RO", currency: "RON"}
+  hu:    {name: "Hungary",          flag: "🇭🇺", base: "https://www.paninihungary.com/shp_hun_hu/",    locale: "hu-HU", currency: "Ft"}
+  gr:    {name: "Greece",           flag: "🇬🇷", base: "https://www.panini.com.gr/shp_grc_el/",        locale: "el-GR", currency: "€"}
+  dk:    {name: "Denmark",          flag: "🇩🇰", base: "https://www.paninidanmark.com/shp_dnk_da/",    locale: "da-DK", currency: "kr."}
+  "no":  {name: "Norway",           flag: "🇳🇴", base: "https://www.panininorge.com/shp_nor_nb/",      locale: "nb-NO", currency: "kr"}
+  se:    {name: "Sweden",           flag: "🇸🇪", base: "https://www.paninisverige.com/shp_swe_sv/",    locale: "sv-SE", currency: "kr"}
+  fi:    {name: "Finland",          flag: "🇫🇮", base: "https://paninisuomi.com/shp_fin_fi/",          locale: "fi-FI", currency: "€"}
+  il:    {name: "Israel",           flag: "🇮🇱", base: "https://www.panini.co.il/shp_isr_he/",         locale: "he-IL", currency: "₪"}
+  int:   {name: "International store", flag: "🌍", base: "https://paninistore.com/shp_int_en/",        locale: "en-GB", currency: "€"}
+  hobby: {name: "Panini Hobby (collector cards)", flag: "🃏", base: "https://www.paninihobby.com/hob_int_en/", locale: "en-GB", currency: "€",
+          categories: ["panini-instant.html", "coming-soon.html"],
+          searches: ["laliga", "soccer", "fifa", "football", "world cup"]}
+  br:    {name: "Brazil",           flag: "🇧🇷", base: "https://panini.com.br/",                       locale: "pt-BR", currency: "R$",
+          searches: ["copa do mundo", "fifa", "futebol", "brasileirao", "adrenalyn", "campeonato", "libertadores"]}
+  mx:    {name: "Mexico",           flag: "🇲🇽", base: "https://tiendapanini.com.mx/",                 locale: "es-MX", currency: "MXN"}
+  cl:    {name: "Chile",            flag: "🇨🇱", base: "https://tiendapanini.cl/",                     locale: "es-CL", currency: "CLP"}
+  uy:    {name: "Uruguay",          flag: "🇺🇾", base: "https://tiendapanini.uy/",                     locale: "es-UY", currency: "UYU"}
+  ar:    {name: "Argentina (Zonakids)", flag: "🇦🇷", base: "https://zonakids.com/",                    locale: "es-AR", currency: "ARS"}
+  co:    {name: "Colombia",         flag: "🇨🇴", base: "https://paninitienda.com/",                    locale: "es-CO", currency: "COP", kind: shopify}
+
+# Words that mark single-sticker / "missing stickers" shelves (thousands of tiny products, not releases)
+skip_category_words: [
+  missing, faltantes, mancanti, manquant, fehlende, ontbrekende, saknade, puuttuvat,
+  manglende, hianyzo, brakujace, "em falta", lipsa, completacion, "complete-sua", "completa-tu",
+  "figuritas-faltantes", "estampas-faltantes", "cromos-faltantes", suelta, singles, "album lleno",
+  "servicio de", "pack-de-", accesorios, accessories, accessoires, zubehor, "gift card",
+]
+
+# Individual "missing card/sticker" singles are not releases; products whose NAME contains one of these
+# (accent/case-insensitive) are ignored everywhere except in your own /watch keywords.
+skip_product_words: [
+  faltante, missing, mancant, manquant, fehlend, ontbrek, saknad, puuttuv, manglende, hianyz, brakuj,
+  "em falta", "lipsa",
+]

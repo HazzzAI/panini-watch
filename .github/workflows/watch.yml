@@ -1,0 +1,76 @@
+name: panini-watch
+
+# Free 24/7 hosting on GitHub Actions: every ~10 minutes a short run checks all Panini shops, sends Telegram
+# alerts and answers your bot commands. State (database) lives on the orphan branch "state".
+on:
+  schedule:
+    - cron: "*/10 * * * *"      # shop check + bot (GitHub may delay scheduled runs by a few minutes)
+    - cron: "17 3 * * 1"        # weekly: re-discover football sections on every shop
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "tick (normal run) or discover (rebuild the football sections)"
+        default: "tick"
+
+# runs never overlap; a waiting run starts as soon as the previous one ends
+concurrency:
+  group: panini-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      PANINI_PROXY: ${{ secrets.PANINI_PROXY }}
+      PANINI_DATA: ${{ github.workspace }}/data
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore state
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code --heads origin state >/dev/null 2>&1; then
+            git fetch --depth 1 origin state
+            git show FETCH_HEAD:panini.db > data/panini.db
+            echo "state restored ($(du -h data/panini.db | cut -f1))"
+          else
+            echo "no state yet (first run)"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt   # uses the Google Chrome already on the runner
+
+      - name: Work
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ "${{ github.event.schedule }}" = "17 3 * * 1" ]; then MODE=discover; fi
+          if [ "$MODE" = "discover" ]; then
+            python -m panini_watch scan --rediscover
+          else
+            python -m panini_watch tick --budget 500
+          fi
+
+      - name: Save state
+        if: always()
+        run: |
+          [ -f data/panini.db ] || exit 0
+          rm -rf /tmp/state && mkdir /tmp/state && cp data/panini.db /tmp/state/
+          cd /tmp/state
+          git init -q -b state
+          git config user.name "panini-watch"
+          git config user.email "panini-watch@users.noreply.github.com"
+          git add panini.db
+          git commit -q -m "state $(date -u +%FT%TZ)"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" state

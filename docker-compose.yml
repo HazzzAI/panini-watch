@@ -1,0 +1,13 @@
+services:
+  panini-watch:
+    build: .
+    container_name: panini-watch
+    restart: unless-stopped          # comes back after crashes and server reboots
+    env_file: .env                   # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID (/ PANINI_PROXY)
+    volumes:
+      - ./data:/app/data             # database, logs, translation cache
+      - ./config.yaml:/app/config.yaml:ro
+    shm_size: "512mb"
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
