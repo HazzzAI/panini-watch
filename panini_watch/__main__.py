@@ -45,6 +45,11 @@ def _load():
     from .store import Store
     cfg = load_config(ROOT / "config.yaml")
     store = Store(DATA / "panini.db")
+    if store.get("alerts_version") != "2":      # one-time: only new listings + discounts, drop queued old alerts
+        for kind, on in (("new", "1"), ("discount", "1"), ("restock", "0"), ("price_drop", "0"), ("sold_out", "0")):
+            store.set(f"alert.{kind}", on)
+        store.set_json("pending", [])
+        store.set("alerts_version", "2")
     return cfg, store
 
 
