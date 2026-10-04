@@ -17,7 +17,7 @@ from .models import Product
 from .monitor import Event, Monitor
 from .sites import Config, Site, fetch_source, keep_product, live_search, site_enabled
 from .store import Store
-from .telegram import Telegram, TelegramError, button, esc, keyboard
+from .telegram import Telegram, TelegramError, button, esc, esc_attr, keyboard
 
 log = logging.getLogger("panini.bot")
 
@@ -86,6 +86,7 @@ class Bot:
         self.awaiting: str | None = None     # next plain-text message is a "search" / "watch" term
         self._offset: int | None = None
         self.monitor.notify = self.notify
+        self.monitor.notify_batch = self.notify_batch
         self.tr = None        # i18n.Translator (set by the app)
 
     # ------------------------------------------------------------------------------------------
@@ -131,6 +132,49 @@ class Bot:
                     else:
                         await self.tg.send(text, markup=markup)
                     await asyncio.sleep(0.35)
+            return True
+        except TelegramError as e:
+            log.error("alert delivery failed: %s", e)
+            return False
+
+    async def notify_batch(self, events: list[Event]) -> bool:
+        """All alerts of one check cycle, across every shop: same product in several shops = one message,
+        many at once = a digest, a flood (catalogue reshuffle) = a single summary."""
+        if not self.tg.chat_id:
+            log.warning("no chat bound yet, cannot deliver %d alerts", len(events))
+            return False
+        order = {k: i for i, k in enumerate(self.cfg.sites)}
+        try:
+            for kind in ("new", "discount", "restock", "price_drop", "sold_out"):
+                evs = [e for e in events if e.type == kind]
+                if not evs:
+                    continue
+                groups: dict[str, list[Event]] = {}
+                for e in evs:
+                    groups.setdefault(render.group_key(e.product), []).append(e)
+                glist = [sorted(g, key=lambda e: order.get(e.site.key, 99)) for g in groups.values()]
+                glist.sort(key=lambda g: -len(g))
+                if len(glist) > self.cfg.flood_limit:
+                    icon, label = render._HEAD[kind]
+                    head = (f"{icon} <b>{len(glist)} {label.lower()} alerts appeared at once</b> — probably a shop "
+                            f"re-organising its catalogue, so I am not sending them one by one.\nA few of them:")
+                    lines = [head, ""] + [
+                        f'{render.STOCK_ICON[g[0].product.in_stock]} <a href="{esc_attr(g[0].product.url)}">'
+                        f'{esc(g[0].product.name[:70])}</a> {"".join(e.site.flag for e in g)}' for g in glist[:8]]
+                    lines.append("\nBrowse them with /new or /deals.")
+                    await self.tg.send("\n".join(lines))
+                elif len(glist) > self.cfg.digest_threshold:
+                    for text in render.group_digest(kind, glist):
+                        await self.tg.send(text)
+                else:
+                    for g in glist:
+                        text, markup = render.group_card(kind, g)
+                        photo = next((e.product.image for e in g if e.product.image), "")
+                        if photo and len(text) <= 1000:
+                            await self.tg.send_photo(photo, text, markup=markup)
+                        else:
+                            await self.tg.send(text, markup=markup)
+                        await asyncio.sleep(0.35)
             return True
         except TelegramError as e:
             log.error("alert delivery failed: %s", e)
