@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlparse
 
-from . import football, render
+from . import compare, football, render
 from .browser import Fetcher
 from .models import Product
 from .monitor import Event, Monitor
@@ -23,6 +23,7 @@ log = logging.getLogger("panini.bot")
 
 COMMANDS = [
     ("search", "Search every shop live (or just type what you want)"),
+    ("compare", "Compare one product's price across all shops"),
     ("browse", "Navigate shops → categories → products"),
     ("new", "Newest products we spotted (e.g. /new es 3)"),
     ("deals", "Products on discount right now (e.g. /deals es)"),
@@ -47,6 +48,7 @@ HELP = (
     "Add <code>@es @it @uk</code> to limit the search to certain shops.\n\n"
     "<b>Commands</b>\n"
     "/search <i>words</i> · /stock <i>words</i> (in stock only)\n"
+    "/compare <i>product</i> — same product in every shop, cheapest first (asks which version)\n"
     "/browse — shops → categories → products\n"
     "/deals [shop] — everything currently on discount\n"
     "/new [shop] [days] — newest finds (<code>/new es 3</code>)\n"
@@ -259,6 +261,9 @@ class Bot:
         if self.awaiting == "watch":
             self.awaiting = None
             return await self.cmd_watch(chat, text)
+        if self.awaiting == "compare":
+            self.awaiting = None
+            return await self.cmd_compare(chat, text)
         if self.awaiting == "search_stock":
             self.awaiting = None
             return await self.cmd_stock(chat, text)
@@ -279,7 +284,8 @@ class Bot:
 
     def _main_menu(self) -> dict:
         return keyboard([
-            [button("🔎 Search", data="m:search"), button("🧭 Browse", data="m:browse")],
+            [button("🔎 Search", data="m:search"), button("⚖️ Compare", data="m:compare")],
+            [button("🧭 Browse", data="m:browse")],
             [button("🆕 Newest finds", data="m:new"), button("🏷 Deals", data="m:deals")],
             [button("✅ In stock", data="m:stock"), button("🏪 Shops", data="m:sites")],
             [button("📊 Status", data="m:status")],
@@ -306,6 +312,15 @@ class Bot:
             return await self.tg.send("What should I search for? e.g. <code>world cup</code> or "
                                       "<code>megacracks @es</code>", chat_id=chat)
         msg = await self.tg.send(f"🔎 Searching <b>{esc(term)}</b> on {len(sites)} shops…", chat_id=chat)
+        rows, errors = await self._live_rows(term, sites, chat, msg["message_id"])
+        sess = self._new_session(f"Search: {term}", rows, only_stock=only_stock)
+        if errors:
+            sess.notes = "⚠️ Could not read: " + ", ".join(errors)
+        await self._show(chat, sess, msg["message_id"])
+
+    async def _live_rows(self, term: str, sites: list[Site], chat, message_id: int,
+                         verb: str = "Searching") -> tuple[list[tuple[Site, Product]], list[str]]:
+        """Search every shop in parallel (also with the term translated into the shop's language)."""
         rows: list[tuple[Site, Product]] = []
         errors: list[str] = []
         done = 0
@@ -338,8 +353,8 @@ class Bot:
                 if time.time() - last_edit > 4 and done < len(sites):
                     last_edit = time.time()
                     try:
-                        await self.tg.edit(chat, msg["message_id"],
-                                           f"🔎 Searching <b>{esc(term)}</b>… {done}/{len(sites)} shops done")
+                        await self.tg.edit(chat, message_id,
+                                           f"🔎 {verb} <b>{esc(term)}</b>… {done}/{len(sites)} shops done")
                     except TelegramError:
                         pass
 
@@ -351,10 +366,138 @@ class Bot:
         skip = [w for w in self.cfg.skip_product if w not in football._norm(term)]
         rows = [(s, p) for s, p in rows if not any(w in football._norm(p.name) for w in skip)]
         rows.sort(key=lambda sp: order.get(sp[0].key, 99))
-        sess = self._new_session(f"Search: {term}", rows, only_stock=only_stock)
-        if errors:
-            sess.notes = "⚠️ Could not read: " + ", ".join(errors)
-        await self._show(chat, sess, msg["message_id"])
+        return rows, errors
+
+    # ---- compare -----------------------------------------------------------------------------
+    async def cmd_compare(self, chat, arg: str) -> None:
+        term, sites = self._parse_scope(arg)
+        if not term:
+            self.awaiting = "compare"
+            return await self.tg.send(
+                "⚖️ <b>Compare</b> — which product? e.g. <code>Calciatori 2024-2025</code> or "
+                "<code>Megacracks 2026/27</code>\nI will find it in every shop, ask which version you want "
+                "(box of 100 packs, album, bundle …) and list the shops cheapest first.", chat_id=chat)
+        msg = await self.tg.send(f"⚖️ Comparing <b>{esc(term)}</b> across {len(sites)} shops…", chat_id=chat)
+        rows, errors = await self._live_rows(term, sites, chat, msg["message_id"], verb="Comparing")
+        toks = compare.tokens(term)
+        scored = [(compare.match_score(toks, p.name, compare.rough_text(p.name)), s, p) for s, p in rows]
+        need = len(toks)
+        hits = [(s, p) for sc, s, p in scored if sc >= need]
+        loose = False
+        if not hits and need >= 3:                    # nothing exact: accept listings missing just one word
+            hits = [(s, p) for sc, s, p in scored if sc >= need - 1]
+            loose = True
+        if not hits:
+            return await self.tg.edit(chat, msg["message_id"],
+                                      f"⚖️ I could not find <b>{esc(term)}</b> in any shop. Try fewer words "
+                                      f"(e.g. just the collection name and season).")
+        await self._translate_rows(hits)
+        variants: list[str] = []
+        icons: dict[str, str] = {}
+        data_rows = []
+        for s, p in hits:
+            label, icon = compare.variant_of(p.name)
+            if label not in variants:
+                variants.append(label)
+                icons[label] = icon
+            data_rows.append([s.key, p.pid, p.name, p.price, p.old_price, p.currency, int(p.in_stock), p.url,
+                              variants.index(label), compare.usd_value(s.key, p.price)])
+        sid = format(next(self._ids), "x")
+        self._save_compare(sid, {"t": term, "v": variants, "i": icons, "r": data_rows, "l": int(loose),
+                                 "e": errors})
+        if len(variants) == 1:
+            text, markup = self._compare_list(sid, 0, False)
+        else:
+            text, markup = self._compare_chooser(sid)
+        await self.tg.edit(chat, msg["message_id"], text, markup=markup)
+
+    def _save_compare(self, sid: str, data: dict) -> None:
+        self.store.set_json(f"cmp.{sid}", data)
+        idx = (self.store.get_json("cmp.index", []) or []) + [sid]
+        for old in idx[:-12]:                         # keep only the latest 12 comparisons
+            self.store.set(f"cmp.{old}", "")
+        self.store.set_json("cmp.index", idx[-12:])
+
+    def _compare_row_product(self, r: list) -> Product:
+        return Product(site=r[0], pid=r[1], name=r[2], url=r[7], price=r[3], old_price=r[4], currency=r[5],
+                       in_stock=bool(r[6]))
+
+    def _compare_chooser(self, sid: str) -> tuple[str, dict]:
+        d = self.store.get_json(f"cmp.{sid}")
+        rows = d["r"]
+        buttons = []
+        info = []
+        for vi, label in enumerate(d["v"]):
+            vr = [r for r in rows if r[8] == vi]
+            usd = [r[9] for r in vr if r[9] is not None and r[6]] or [r[9] for r in vr if r[9] is not None]
+            info.append((len({r[0] for r in vr}), vi, label, min(usd) if usd else None))
+        info.sort(key=lambda t: (-t[0], t[2]))
+        for n, vi, label, low in info[:10]:
+            txt = f"{d['i'].get(label, '🔹')} {label} · {n} shop{'s' if n != 1 else ''}"
+            if low is not None:
+                txt += f" · from ${low:,.0f}"
+            buttons.append([button(txt, data=f"cp:{sid}:{vi}:0")])
+        buttons.append([button(f"📋 All versions ({len(rows)} listings)", data=f"cp:{sid}:a:0")])
+        shops = len({r[0] for r in rows})
+        head = (f"⚖️ <b>Compare: {esc(d['t'])}</b>\nFound {len(rows)} listings in {shops} shops"
+                + (" (closest matches)" if d.get("l") else "") + ".\n\n<b>Which version do you want?</b>")
+        return head, keyboard(buttons)
+
+    def _compare_list(self, sid: str, vi, only_stock: bool) -> tuple[str, dict]:
+        d = self.store.get_json(f"cmp.{sid}")
+        if not d:
+            return "This comparison expired — run /compare again.", keyboard([])
+        rows = d["r"] if vi == "a" else [r for r in d["r"] if r[8] == int(vi)]
+        recs = [{"r": r, "stock": bool(r[6]), "usd": r[9]} for r in rows]
+        recs.sort(key=compare.rank_key)
+        n_in = sum(1 for x in recs if x["stock"])
+        shown = [x for x in recs if x["stock"]] if only_stock else recs
+        label = "All versions" if vi == "a" else d["v"][int(vi)]
+        icon = "📋" if vi == "a" else d["i"].get(label, "🔹")
+        lines = [f"⚖️ <b>Compare: {esc(d['t'])}</b>", f"{icon} <b>{esc(label)}</b> — {len({x['r'][0] for x in recs})} "
+                 f"shops, cheapest first", ""]
+        ins = [x for x in recs if x["stock"] and x["usd"] is not None]
+        if len(ins) >= 2:
+            lo, hi = ins[0], max(ins, key=lambda x: x["usd"])
+            if hi["usd"] > lo["usd"]:
+                lines.insert(2, f"💡 Cheapest ≈ ${lo['usd']:,.2f} ({self.cfg.sites[lo['r'][0]].flag}) vs dearest ≈ "
+                                f"${hi['usd']:,.2f} ({self.cfg.sites[hi['r'][0]].flag}) — save ≈ "
+                                f"${hi['usd'] - lo['usd']:,.2f} ({round((1 - lo['usd'] / hi['usd']) * 100)}%)")
+                lines.insert(3, "")
+        medals = ["🥇", "🥈", "🥉"]
+        shop_count: dict[str, int] = {}
+        for x in shown:
+            shop_count[x["r"][0]] = shop_count.get(x["r"][0], 0) + 1
+        rank = 0
+        for x in shown[:25]:
+            r = x["r"]
+            site = self.cfg.sites[r[0]]
+            p = self._compare_row_product(r)
+            if x["stock"]:
+                mark = medals[rank] if rank < 3 else f"{rank + 1}."
+                rank += 1
+            else:
+                mark = "❌"
+            extra = ""
+            if vi == "a":
+                extra = f" <i>[{esc(d['v'][r[8]])}]</i>"
+            elif shop_count[r[0]] > 1:
+                extra = f" <i>{esc(r[2][:40])}</i>"
+            lines.append(f'{mark} {site.flag} <a href="{esc_attr(p.url)}">{esc(site.name)}</a> '
+                         f'{render.price_line(p)}{extra}')
+        if len(shown) > 25:
+            lines.append(f"…and {len(shown) - 25} more")
+        if not shown:
+            lines.append("Nothing in stock for this version right now.")
+        lines += ["", "<i>Prices as listed by each shop (shipping not included); ❌ = sold out.</i>"]
+        if d.get("e"):
+            lines.append("⚠️ Could not read: " + ", ".join(d["e"]))
+        f = 0 if only_stock else 1
+        kb = [[button("📋 Show sold out too" if only_stock else f"✅ In stock only ({n_in})",
+                      data=f"cp:{sid}:{vi}:{0 if only_stock else 1}")]]
+        if len(d["v"]) > 1:
+            kb.append([button("⬅️ Other versions", data=f"cp:{sid}:c")])
+        return "\n".join(lines), keyboard(kb)
 
     async def cmd_stock(self, chat, arg: str) -> None:
         await self.cmd_search(chat, arg, only_stock=True)
@@ -596,6 +739,8 @@ class Bot:
             if what == "stock":
                 self.awaiting = "search_stock"
                 return await self.tg.send("What should I look for (in-stock only)?", chat_id=chat)
+            if what == "compare":
+                return await self.cmd_compare(chat, "")
             if what == "browse":
                 return await self.cmd_browse(chat, "", mid)
             if what == "new":
@@ -629,6 +774,15 @@ class Bot:
                 if sid.isdigit():
                     self.store.remove_source(int(sid))
             return await self.cmd_watchlist(chat, "", mid)
+        elif head == "cp":
+            sid, what = parts[1], parts[2]
+            if not self.store.get_json(f"cmp.{sid}"):
+                return await self.tg.edit(chat, mid, "This comparison expired — run /compare again.")
+            if what == "c":
+                text, markup = self._compare_chooser(sid)
+            else:
+                text, markup = self._compare_list(sid, what, parts[3] == "1")
+            return await self.tg.edit(chat, mid, text, markup=markup)
         elif head == "sr":
             sess = self.sessions.get(parts[1])
             if not sess:
