@@ -41,6 +41,7 @@ Single "missing card" listings (`cartas faltantes`, `mancanti`, …) are ignored
 |---|---|
 | `world cup` | live search on every enabled shop, ✅/❌ stock, price, link; buttons: in-stock only, by shop, pages |
 | `megacracks @es` | search only the Spanish shop (`@es @it @uk …`) |
+| `/compare Calciatori 2024-2025` | **Compare**: finds that product in every shop, asks which *version* you want (e.g. 📦 Box · 100 packs, 📘 Album, 🎁 Bundle …), then lists the shops **cheapest first** with USD prices and how much you save; ✅ in-stock-only toggle |
 | `/stock este @es` | same, in-stock only |
 | `/browse` | shops → football sections (LaLiga, Megacracks, Liga Este, World Cup 2026 …) → products |
 | `/deals` · `/deals es` | everything currently on discount (biggest % first) |
