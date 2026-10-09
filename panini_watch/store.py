@@ -193,6 +193,23 @@ class Store:
         with self._lock:
             return self._db.execute(q, args).fetchall()
 
+    def sealed_products(self, site: str, n: int = 3) -> list[sqlite3.Row]:
+        """In-stock boxes / packs / albums at low, middle and high prices (for the shipping test)."""
+        q = ("SELECT url,name,price FROM products WHERE site=? AND in_stock=1 AND price>0 "
+             "AND url NOT LIKE '%-its.html' AND lower(name) NOT LIKE '%missing%' AND (sku IS NULL OR sku NOT LIKE 'BUNDLE%') "
+             "AND (lower(name) LIKE '%box%' OR lower(name) LIKE '%pack%' OR lower(name) LIKE '%album%' "
+             "OR lower(name) LIKE '%collection%') ORDER BY price")
+        with self._lock:
+            rows = self._db.execute(q, (site,)).fetchall()
+            if not rows:
+                rows = self._db.execute("SELECT url,name,price FROM products WHERE site=? AND in_stock=1 "
+                                        "AND url NOT LIKE '%-its.html' ORDER BY price", (site,)).fetchall()
+        if not rows:
+            return []
+        top = [r for r in rows if r["price"] <= rows[-1]["price"]]
+        idx = sorted({int(len(rows) * f) for f in (0.15, 0.5, 0.9)} | {len(rows) - 1}) if n >= 3 else [len(rows) // 2]
+        return [rows[min(i, len(rows) - 1)] for i in idx][:max(n, 4)]
+
     def search_local(self, term: str, site: str | None = None, limit: int = 60) -> list[sqlite3.Row]:
         q = "SELECT * FROM products WHERE name LIKE ?"
         args: list = [f"%{term}%"]
