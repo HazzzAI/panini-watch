@@ -15,6 +15,12 @@ every price that is not in dollars gets its **USD value** next to it, e.g. `129,
 It is also an interactive bot: type *world cup* and it searches all shops live and shows what is
 ✅ in stock / ❌ sold out; browse shop → category → product; ask for the newest finds, etc.
 
+**Only shops that really ship to the UAE are used.** Many Panini shops list the UAE in their country dropdown
+but answer "no shipping quote" at checkout, so `shipcheck` tests every shop like a customer (item in the cart →
+shipping estimate for the UAE) and re-tests weekly. Today only 🇪🇸 Spain (courier €50–150, none on tiny orders)
+and 🌍 the International store (courier €50–60) ship to the UAE; everything else is excluded. See `/shipping`.
+`/compare` ranks shops by the **delivered** price (item + UAE shipping).
+
 Only football is kept (World Cup, FIFA 365, LaLiga/Megacracks/Este/Adrenalyn, Calciatori, Bundesliga, Premier
 League, Libertadores …). NBA, comics, manga, Disney, cycling, … are filtered out.
 Single "missing card" listings (`cartas faltantes`, `mancanti`, …) are ignored — they are not releases.
@@ -42,6 +48,7 @@ Single "missing card" listings (`cartas faltantes`, `mancanti`, …) are ignored
 | `world cup` | live search on every enabled shop, ✅/❌ stock, price, link; buttons: in-stock only, by shop, pages |
 | `megacracks @es` | search only the Spanish shop (`@es @it @uk …`) |
 | `/compare Calciatori 2024-2025` | **Compare**: finds that product in every shop, asks which *version* you want (e.g. 📦 Box · 100 packs, 📘 Album, 🎁 Bundle …), then lists the shops **cheapest first** with USD prices and how much you save; ✅ in-stock-only toggle |
+| `/shipping` | which shops ship to the UAE, with courier fees |
 | `/stock este @es` | same, in-stock only |
 | `/browse` | shops → football sections (LaLiga, Megacracks, Liga Este, World Cup 2026 …) → products |
 | `/deals` · `/deals es` | everything currently on discount (biggest % first) |
