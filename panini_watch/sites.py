@@ -88,7 +88,17 @@ class Config:
         return [s for s in self.sites.values() if site_enabled(store, s)]
 
 
+def ships_here(store: Store, site: Site) -> bool | None:
+    """True/False from the last UAE shipping test, None if the shop has not been tested yet."""
+    ship = store.get_json(f"ship.{site.key}")
+    if not ship:
+        return None
+    return ship.get("ships") is True
+
+
 def site_enabled(store: Store, site: Site) -> bool:
+    if ships_here(store, site) is False:              # does not ship to your country (or could not be verified)
+        return False
     v = store.get(f"site.{site.key}.enabled")
     return site.enabled_default if v is None else v == "1"
 
