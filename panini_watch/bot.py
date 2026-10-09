@@ -11,11 +11,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlparse
 
-from . import compare, football, render
+from . import compare, football, render, shipping
 from .browser import Fetcher
 from .models import Product
 from .monitor import Event, Monitor
-from .sites import Config, Site, fetch_source, keep_product, live_search, site_enabled
+from .sites import Config, Site, fetch_source, keep_product, live_search, ships_here, site_enabled
 from .store import Store
 from .telegram import Telegram, TelegramError, button, esc, esc_attr, keyboard
 
@@ -30,6 +30,7 @@ COMMANDS = [
     ("stock", "Search, only what is in stock"),
     ("watch", "Watch a keyword on all shops (e.g. /watch Megacracks)"),
     ("watchlist", "Show / remove your keyword watches"),
+    ("shipping", "Which shops ship to the UAE (and what it costs)"),
     ("sites", "Turn shops on or off"),
     ("alerts", "Choose which alerts you get"),
     ("status", "Health of the watcher"),
@@ -53,7 +54,7 @@ HELP = (
     "/deals [shop] — everything currently on discount\n"
     "/new [shop] [days] — newest finds (<code>/new es 3</code>)\n"
     "/watch <i>words</i> [@shop] — alert me for this keyword · /watchlist\n"
-    "/sites — enable / disable shops · /alerts — pick alert types\n"
+    "/shipping — which shops really ship to the UAE · /sites — enable / disable shops · /alerts — alert types\n"
     "/status · /scan [shop] · /mute · /unmute\n\n"
     "Send me any Panini category link and I will start watching it."
 )
@@ -298,7 +299,7 @@ class Bot:
         enabled = self.cfg.enabled_sites(self.store)
         if keys:
             wanted = {k.lower() for k in keys}
-            sites = [s for s in self.cfg.sites.values() if s.key in wanted]
+            sites = [s for s in self.cfg.sites.values() if s.key in wanted and ships_here(self.store, s) is not False]
             if not sites:
                 sites = enabled
         else:
@@ -448,14 +449,24 @@ class Bot:
         if not d:
             return "This comparison expired — run /compare again.", keyboard([])
         rows = d["r"] if vi == "a" else [r for r in d["r"] if r[8] == int(vi)]
-        recs = [{"r": r, "stock": bool(r[6]), "usd": r[9]} for r in rows]
+        recs = []
+        for r in rows:
+            ship = self.store.get_json(f"ship.{r[0]}")
+            fee = shipping.fee_for(ship, r[3])
+            fee_usd = compare.usd_value(r[0], fee) if fee is not None else None
+            total = (r[9] + fee_usd) if (r[9] is not None and fee_usd is not None) else r[9]
+            small = bool(ship and "not on every order" in (ship.get("note") or "") and ship.get("samples")
+                         and r[3] is not None and r[3] < ship["samples"][0]["cart"] * 0.9)
+            recs.append({"r": r, "stock": bool(r[6]), "usd": total, "price_usd": r[9], "fee_usd": fee_usd,
+                         "small": small})
         recs.sort(key=compare.rank_key)
+        delivered = any(x["fee_usd"] is not None for x in recs)
         n_in = sum(1 for x in recs if x["stock"])
         shown = [x for x in recs if x["stock"]] if only_stock else recs
         label = "All versions" if vi == "a" else d["v"][int(vi)]
         icon = "📋" if vi == "a" else d["i"].get(label, "🔹")
         lines = [f"⚖️ <b>Compare: {esc(d['t'])}</b>", f"{icon} <b>{esc(label)}</b> — {len({x['r'][0] for x in recs})} "
-                 f"shops, cheapest first", ""]
+                 f"shops, cheapest {'delivered to ' + self._dest_name() if delivered else 'first'}", ""]
         ins = [x for x in recs if x["stock"] and x["usd"] is not None]
         if len(ins) >= 2:
             lo, hi = ins[0], max(ins, key=lambda x: x["usd"])
@@ -483,13 +494,20 @@ class Bot:
                 extra = f" <i>[{esc(d['v'][r[8]])}]</i>"
             elif shop_count[r[0]] > 1:
                 extra = f" <i>{esc(r[2][:40])}</i>"
+            ship_txt = ""
+            if x["fee_usd"] is not None:
+                ship_txt = f"\n      🚚 + ≈ ${x['fee_usd']:,.0f} shipping → <b>≈ ${x['usd']:,.0f} delivered</b>"
+                if x["small"]:
+                    ship_txt += " ⚠️ small orders may not ship"
             lines.append(f'{mark} {site.flag} <a href="{esc_attr(p.url)}">{esc(site.name)}</a> '
-                         f'{render.price_line(p)}{extra}')
+                         f'{render.price_line(p)}{extra}{ship_txt}')
         if len(shown) > 25:
             lines.append(f"…and {len(shown) - 25} more")
         if not shown:
             lines.append("Nothing in stock for this version right now.")
-        lines += ["", "<i>Prices as listed by each shop (shipping not included); ❌ = sold out.</i>"]
+        lines += ["", "<i>Shipping = the shop's courier quote to " + self._dest_name() + " for a similar order value "
+                  "(estimate; the final fee is shown at checkout). ❌ = sold out.</i>" if delivered else
+                  "<i>Prices as listed by each shop; ❌ = sold out.</i>"]
         if d.get("e"):
             lines.append("⚠️ Could not read: " + ", ".join(d["e"]))
         f = 0 if only_stock else 1
@@ -592,7 +610,9 @@ class Bot:
 
     # ---- sites -------------------------------------------------------------------------------
     async def cmd_sites(self, chat, arg: str, message_id: int | None = None) -> None:
-        sites = list(self.cfg.sites.values())
+        everything = list(self.cfg.sites.values())
+        sites = [s for s in everything if ships_here(self.store, s) is not False]
+        hidden = [s for s in everything if ships_here(self.store, s) is False]
         rows = []
         for i in range(0, len(sites), 2):
             rows.append([button(f"{'✅' if site_enabled(self.store, s) else '⛔'} {s.label}", data=f"ts:{s.key}")
@@ -600,10 +620,53 @@ class Bot:
         rows.append([button("All on", data="ts:*:1"), button("All off", data="ts:*:0")])
         text = ("🏪 <b>Shops being watched</b>\nTap to switch a shop on/off. "
                 "Alerts and searches only use ✅ shops.")
+        if hidden:
+            text += (f"\n\n🚫 <b>Not used — they do not ship to {self._dest_name()}:</b> "
+                     + ", ".join(esc(s.name) for s in hidden) + "\nSee /shipping.")
         if message_id:
             await self.tg.edit(chat, message_id, text, markup=keyboard(rows))
         else:
             await self.tg.send(text, chat_id=chat, markup=keyboard(rows))
+
+    # ---- shipping ----------------------------------------------------------------------------
+    _DEST_NAMES = {"AE": "the UAE", "SA": "Saudi Arabia", "QA": "Qatar", "KW": "Kuwait", "BH": "Bahrain", "OM": "Oman"}
+
+    def _dest_name(self) -> str:
+        code = (self.store.get("ship.dest") or self.cfg.raw.get("destination") or "AE").upper()
+        return self._DEST_NAMES.get(code, code)
+
+    async def cmd_shipping(self, chat, arg: str) -> None:
+        yes, no, unk = [], [], []
+        for s in self.cfg.sites.values():
+            v = self.store.get_json(f"ship.{s.key}")
+            if not v:
+                unk.append((s, None))
+            elif v.get("ships") is True:
+                yes.append((s, v))
+            elif v.get("ships") is False:
+                no.append((s, v))
+            else:
+                unk.append((s, v))
+        lines = [f"🚚 <b>Shipping to {self._dest_name()}</b>",
+                 "Tested like a customer: item in the cart → shipping estimate for the country.", ""]
+        for s, v in yes:
+            fees = [x["fee"] for x in v.get("samples", [])]
+            cost = ""
+            if fees:
+                lo, hi = min(fees), max(fees)
+                cost = f" — courier ≈ {s.currency}{lo:g}" + (f"–{hi:g}" if hi != lo else "")
+            extra = " <i>(small orders get no quote)</i>" if "not on every order" in v.get("note", "") else ""
+            lines.append(f"✅ {s.flag} {esc(s.name)}{cost}{extra}")
+        for s, v in no:
+            lines.append(f"🚫 {s.flag} {esc(s.name)}")
+        for s, v in unk:
+            lines.append(f"❔ {s.flag} {esc(s.name)} — {esc((v or {}).get('note', 'not tested yet')[:60])}")
+        done = self.store.get("ship.checked")
+        if done:
+            days = (time.time() - float(done)) / 86400
+            lines += ["", f"<i>Last tested {days:.0f} day(s) ago; re-tested every week. Only ✅ shops are watched, "
+                          f"searched and compared. Shipping fees are quotes for similar order values.</i>"]
+        await self.tg.send("\n".join(lines), chat_id=chat)
 
     # ---- alerts ------------------------------------------------------------------------------
     async def cmd_alerts(self, chat, arg: str, message_id: int | None = None) -> None:
@@ -758,7 +821,8 @@ class Bot:
         elif head == "ts":
             if parts[1] == "*":
                 for s in self.cfg.sites.values():
-                    self.store.set(f"site.{s.key}.enabled", parts[2])
+                    if ships_here(self.store, s) is not False:
+                        self.store.set(f"site.{s.key}.enabled", parts[2])
             else:
                 s = self.cfg.sites[parts[1]]
                 self.store.set(f"site.{s.key}.enabled", "0" if site_enabled(self.store, s) else "1")
