@@ -1,6 +1,9 @@
 # Panini Watch configuration
 # Secrets (Telegram token / chat id) live in .env, NOT here.
 
+# Only shops that really ship here are used (tested at checkout: python -m panini_watch shipcheck)
+destination: AE
+
 check_interval_minutes: 10      # how often every enabled shop is re-checked
 page_delay_seconds: [1.0, 2.5]  # polite pause between two page loads on the same shop
 sites_in_parallel: 5            # shops scanned at the same time (each shop still gets one page at a time)
