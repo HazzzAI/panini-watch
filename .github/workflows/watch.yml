@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "tick (normal run) or discover (rebuild the football sections)"
+        description: "tick (normal run), discover (rebuild football sections + shipping test) or shipcheck"
         default: "tick"
 
 # runs never overlap; a waiting run starts as soon as the previous one ends
@@ -59,7 +59,10 @@ jobs:
           MODE="${{ github.event.inputs.mode }}"
           if [ "${{ github.event.schedule }}" = "17 3 * * 1" ]; then MODE=discover; fi
           if [ "$MODE" = "discover" ]; then
+            python -m panini_watch shipcheck
             python -m panini_watch scan --rediscover
+          elif [ "$MODE" = "shipcheck" ]; then
+            python -m panini_watch shipcheck
           else
             python -m panini_watch tick --budget 500
           fi
@@ -80,12 +83,12 @@ jobs:
       # Start the next run right away instead of waiting for GitHub's (best-effort) cron. Only chain after a
       # normal-length run, so a crash can never turn into a tight loop; the cron stays as a safety net.
       - name: Chain next run
-        if: always() && github.event.schedule != '17 3 * * 1'
+        if: always()
         run: |
           START=$(cat /tmp/start_ts 2>/dev/null || date +%s)
           ELAPSED=$(( $(date +%s) - START ))
           echo "run lasted ${ELAPSED}s"
-          if [ "$ELAPSED" -gt 240 ] && [ "${{ github.event.inputs.mode }}" != "discover" ]; then
+          if [ "$ELAPSED" -gt 240 ]; then
             sleep 15
             curl -fsS -X POST               -H "Authorization: Bearer ${{ github.token }}" -H "Accept: application/vnd.github+json"               "https://api.github.com/repos/${{ github.repository }}/actions/workflows/watch.yml/dispatches"               -d '{"ref":"main","inputs":{"mode":"tick"}}' && echo "next run queued"
           fi
