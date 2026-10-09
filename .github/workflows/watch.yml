@@ -82,13 +82,27 @@ jobs:
 
       # Start the next run right away instead of waiting for GitHub's (best-effort) cron. Only chain after a
       # normal-length run, so a crash can never turn into a tight loop; the cron stays as a safety net.
+      # If the UAE shipping test is missing or older than 7 days, the next run is the shipping test.
       - name: Chain next run
         if: always()
         run: |
           START=$(cat /tmp/start_ts 2>/dev/null || date +%s)
           ELAPSED=$(( $(date +%s) - START ))
           echo "run lasted ${ELAPSED}s"
+          NEXT=tick
+          if [ "${{ github.event.inputs.mode }}" != "shipcheck" ] && [ -f data/panini.db ]; then
+            NEXT=$(python - <<'PY'
+          import sqlite3, time
+          try:
+              v = sqlite3.connect('data/panini.db').execute("select value from kv where key='ship.checked'").fetchone()
+              print('shipcheck' if (not v or time.time() - float(v[0]) > 7 * 86400) else 'tick')
+          except Exception:
+              print('tick')
+          PY
+            )
+          fi
+          echo "next mode: $NEXT"
           if [ "$ELAPSED" -gt 240 ]; then
             sleep 15
-            curl -fsS -X POST               -H "Authorization: Bearer ${{ github.token }}" -H "Accept: application/vnd.github+json"               "https://api.github.com/repos/${{ github.repository }}/actions/workflows/watch.yml/dispatches"               -d '{"ref":"main","inputs":{"mode":"tick"}}' && echo "next run queued"
+            curl -fsS -X POST               -H "Authorization: Bearer ${{ github.token }}" -H "Accept: application/vnd.github+json"               "https://api.github.com/repos/${{ github.repository }}/actions/workflows/watch.yml/dispatches"               -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT\"}}" && echo "next run queued"
           fi
