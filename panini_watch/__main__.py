@@ -249,6 +249,23 @@ async def cmd_tick(args) -> int:
     return 0
 
 
+async def cmd_shipcheck(args) -> int:
+    """Test at checkout which shops really ship to the destination country and store the verdicts."""
+    from .browser import Fetcher
+    from .shipping import run_check
+    cfg, store = _load()
+    dest = (args.country or cfg.raw.get("destination") or "AE").upper()
+    f = Fetcher()
+    try:
+        await f.start()
+        res = await run_check(f._browser, cfg, store, dest, args.site or None)
+    finally:
+        await f.close()
+    ok = [k for k, v in res.items() if v["ships"]]
+    print(f"\nShips to {dest}: {ok or 'none'}")
+    return 0
+
+
 async def cmd_scan(args) -> int:
     """One-off scan printing events to the console (no Telegram needed)."""
     from .browser import Fetcher
@@ -333,6 +350,9 @@ def main() -> None:
     p.add_argument("--show", action="store_true", help="show the browser window")
     p = sub.add_parser("tick", help="one scheduled cloud run (scan + answer commands for --budget seconds)")
     p.add_argument("--budget", type=int, default=500)
+    p = sub.add_parser("shipcheck", help="test which shops really ship to your country (weekly in the cloud)")
+    p.add_argument("--country", help="ISO code, default from config.yaml (AE)")
+    p.add_argument("--site", action="append")
     p = sub.add_parser("search", help="live search from the console")
     p.add_argument("term")
     p.add_argument("--site", action="append")
@@ -346,7 +366,7 @@ def main() -> None:
         for stream in (sys.stdout, sys.stderr):
             if stream is not None:
                 stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    fn = {"setup": cmd_setup, "run": cmd_run, "tick": cmd_tick, "scan": cmd_scan, "search": cmd_search,
+    fn = {"setup": cmd_setup, "run": cmd_run, "tick": cmd_tick, "shipcheck": cmd_shipcheck, "scan": cmd_scan, "search": cmd_search,
           "discover": cmd_discover, "sites": cmd_sites}[args.cmd]
     try:
         raise SystemExit(asyncio.run(fn(args)))
