@@ -29,6 +29,8 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       PANINI_PROXY: ${{ secrets.PANINI_PROXY }}
+      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
       PANINI_DATA: ${{ github.workspace }}/data
       PYTHONUNBUFFERED: "1"
     steps:
