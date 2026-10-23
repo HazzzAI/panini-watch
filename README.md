@@ -48,6 +48,7 @@ Single "missing card" listings (`cartas faltantes`, `mancanti`, …) are ignored
 | `world cup` | live search on every enabled shop, ✅/❌ stock, price, link; buttons: in-stock only, by shop, pages |
 | `megacracks @es` | search only the Spanish shop (`@es @it @uk …`) |
 | `/compare Calciatori 2024-2025` | **Compare**: finds that product in every shop, asks which *version* you want (e.g. 📦 Box · 100 packs, 📘 Album, 🎁 Bundle …), then lists the shops **cheapest first** with USD prices and how much you save; ✅ in-stock-only toggle |
+| `/ebay Panini 2022 world cup complete album hardcover` | **eBay search**: understands what you mean (tournament, year, album/box, complete, hardcover, Swiss/German/… edition), writes it the way sellers do on **14 eBay sites in 7 languages** (ebay.com, .co.uk, .de, .it, .es, .fr, .nl, .be, .at, .ch, .ie, .pl, .com.au, .ca), keeps only listings that **ship to the UAE, USA, Germany or UK** (ranked by the cheapest of those), drops empty albums / single stickers / reprints / wrong years, and lists the **cheapest delivered (price + shipping) in USD**. Buttons: next 5, include auctions, “how I searched”. |
 | `/shipping` | which shops ship to the UAE, with courier fees |
 | `/stock este @es` | same, in-stock only |
 | `/browse` | shops → football sections (LaLiga, Megacracks, Liga Este, World Cup 2026 …) → products |
@@ -90,3 +91,12 @@ python -m panini_watch scan --site es             # one scan, alerts printed to 
 extra `categories` / `searches` per shop, words that exclude categories/products, `extra_football_keywords`.
 
 Logs: `data/panini_watch.log`. Reset everything: delete the `data` folder.
+
+## eBay keys (free, one time)
+
+eBay search uses eBay's official Browse API (scraping eBay is not allowed). It needs a free developer keyset:
+developer.ebay.com → sign in with any eBay account → *Application Keysets* → create a **Production** keyset →
+in *Alerts & Notifications* choose “opt out / not persisting eBay data” for Marketplace Account Deletion →
+copy **App ID (Client ID)** and **Cert ID (Client Secret)** into `.env` as `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET`
+(and as GitHub secrets of the same names for the cloud). Default quota: 5,000 calls/day (one search ≈ 30–40 calls).
+Console test: `python -m panini_watch ebay "Panini 2014 world cup swiss box"`.
