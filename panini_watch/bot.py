@@ -45,9 +45,10 @@ HELP = (
     "<b>⚽ Panini Watch</b>\n"
     "I watch every official Panini shop and ping you when a <b>football</b> product drops, comes back in stock "
     "or gets cheaper.\n\n"
-    "<b>Just type</b> what you want, e.g. <code>world cup</code> or <code>megacracks @es</code> — I search the "
-    "shops live and show what is ✅ in stock / ❌ sold out.\n"
-    "Add <code>@es @it @uk</code> to limit the search to certain shops.\n\n"
+    "<b>Just type</b> what you want, e.g. <code>panini 2022 world cup complete album hardcover</code> — I search "
+    "<b>14 eBay sites</b> (cheapest delivered to your UAE / USA / Germany / UK addresses) and the official Panini shops. "
+    "Shop-only search: <code>/search megacracks @es</code>. "
+    "\n\n"
     "<b>Commands</b>\n"
     "/search <i>words</i> · /stock <i>words</i> (in stock only)\n"
     "/compare <i>product</i> — same product in every shop, cheapest first (asks which version)\n"
@@ -279,7 +280,20 @@ class Bot:
         # a Panini link -> watch that category
         if re.match(r"https?://\S+$", text):
             return await self._add_link(chat, text)
+        if self.ebay and self.ebay.configured:          # just typing = eBay (14 sites) + the official Panini shops
+            await asyncio.gather(self._shops_quick(chat, text), self.cmd_ebay(chat, text))
+            return
         await self.cmd_search(chat, text)
+
+    async def _shops_quick(self, chat, text: str) -> None:
+        """Official Panini shops that ship to you: only answer if something matches (no noise)."""
+        term, sites = self._parse_scope(text)
+        if not term or not sites:
+            return
+        rows, _ = await self._live_rows(term, sites, chat, None)
+        if rows:
+            sess = self._new_session(f"Official Panini shops: {term}", rows)
+            await self._show(chat, sess)
 
     # ---- /help /start ------------------------------------------------------------------------
     async def cmd_start(self, chat, arg: str) -> None:
@@ -359,7 +373,7 @@ class Bot:
                 return []
             finally:
                 done += 1
-                if time.time() - last_edit > 4 and done < len(sites):
+                if message_id and time.time() - last_edit > 4 and done < len(sites):
                     last_edit = time.time()
                     try:
                         await self.tg.edit(chat, message_id,
@@ -428,9 +442,11 @@ class Bot:
                          "s": it.ship, "sc": it.ship_currency, "tot": m.total_usd, "su": m.ship_usd,
                          "cond": it.condition, "loc": it.location, "fb": it.seller_pct, "fs": it.seller_score,
                          "auc": "AUCTION" in it.buying and "FIXED_PRICE" not in it.buying, "bids": it.bids,
-                         "miss": m.missing_soft, "d": m.dest, "alts": m.alts, "note": m.note})
+                         "miss": m.missing_soft, "d": m.dest, "alts": m.alts, "note": m.note,
+                         "id": it.item_id, "pu": m.price_usd, "o": m.options})
         sid = format(next(self._ids), "x")
-        data = {"q": q, "auctions": auctions, "r": rows, "n": out.listings, "sum": out.intent.summary(),
+        data = {"q": q, "auctions": auctions, "r": rows, "n": out.listings, "m": len(out.matches),
+                "sum": out.intent.summary(),
                 "qs": out.queries, "err": out.errors, "sites": len(out.queries), "dests": dests, "eu": europe,
                 "plan": out.plan}
         self.store.set_json(f"eb.{sid}", data)
@@ -441,6 +457,23 @@ class Bot:
         text, markup = self._ebay_page(sid, 0)
         await self.tg.edit(chat, mid, text, markup=markup)
 
+    async def _ebay_fill(self, sid: str, page: int, per: int = 5) -> None:
+        """Rows shown on later pages: ask eBay for the delivered price to each address that is still unknown."""
+        from . import ebay as EB
+        d = self.store.get_json(f"eb.{sid}")
+        rows = d["r"][page * per:(page + 1) * per]
+        dests = d.get("dests") or ["AE"]
+        todo = [(r, x) for r in rows if r.get("id") for x in dests if x not in (r.get("o") or {})]
+        if not todo or not self.ebay:
+            return
+
+        async def one(r, x):
+            q = await self.ebay.ship_quote(r["id"], r["mk"], x)
+            s = EB._usd(q[0], q[1]) if q else None
+            r.setdefault("o", {})[x] = (r["pu"] + s) if (q and s is not None and r.get("pu") is not None) else None
+        await asyncio.gather(*[one(r, x) for r, x in todo])
+        self.store.set_json(f"eb.{sid}", d)
+
     def _ebay_page(self, sid: str, page: int, per: int = 5) -> tuple[str, dict]:
         from . import ebay as EB
         d = self.store.get_json(f"eb.{sid}")
@@ -448,7 +481,7 @@ class Bot:
         pages = max(1, (len(rows) + per - 1) // per)
         page = min(max(page, 0), pages - 1)
         lines = [f"🛒 <b>eBay: {esc(d['q'])}</b>", f"🧠 {esc(d['sum'])}",
-                 f"🌍 {d['sites']} eBay sites · {d['n']} listings checked · <b>{len(rows)} match</b> · "
+                 f"🌍 {d['sites']} eBay sites · {d['n']} listings checked · <b>{d.get('m', len(rows))} match</b> · "
                  f"each ships to " + " / ".join(EB.dest_label(x, d.get('eu', 'DE')) for x in d.get('dests', ['AE'])),
                  ""]
         if not rows:
@@ -466,15 +499,31 @@ class Bot:
             est = "" if r["su"] is not None else " (shipping est.)"
             ship = (f" + {r['s']:,.2f} {r['sc']} shipping" if r["s"] else " + free shipping") if r["s"] is not None \
                 else " + shipping at checkout"
-            seller = f" · ⭐ {r['fb']}%" if r.get("fb") else ""
+            if r.get("fs") == 0 or r.get("fb") in ("0.0", "0"):
+                seller = " · ⚠️ new seller (no feedback yet)"
+            else:
+                seller = f" · ⭐ {r['fb']}%" + (f" ({r['fs']:,})" if r.get("fs") else "") if r.get("fb") else ""
             loc = f" · 📍{EB.COUNTRY_FLAG.get(r['loc'], r['loc'])}" if r.get("loc") else ""
             auc = f" · 🔨 auction ({r['bids'] or 0} bids)" if r.get("auc") else ""
             lines.append(f'{mark} <b>{tot}</b>{est} · <a href="{esc_attr(r["u"])}">{esc(r["t"][:95])}</a>')
-            lines.append(f"      {mflag} {domain} · {r['p']:,.2f} {esc(r['c'])}{ship} · {esc(r.get('cond') or '')}"
-                         f"{loc}{seller}{auc}{alts}")
+            lines.append(f"      {mflag} {domain} · {r['p']:,.2f} {esc(r['c'])} · {esc(r.get('cond') or '')}"
+                         f"{loc}{seller}{auc}")
+            opts = r.get("o") or {}
+            cells = []
+            for x in d.get("dests") or ["AE"]:
+                flag = EB.dest_label(x).split()[0]
+                if x not in opts:
+                    cells.append(f"{flag} ?")
+                elif opts[x] is None:
+                    cells.append(f"{flag} ✗")
+                else:
+                    cell = f"{flag} ${opts[x]:,.0f}"
+                    cells.append(f"<b>{cell}</b>" if x == r.get("d") else cell)
+            lines.append("      🚚 " + " · ".join(cells))
             if r.get("note"):
                 lines.append(f"      📦 <i>{esc(r['note'])}</i>")
-        lines += ["", "<i>Total = price + shipping as quoted by eBay to the cheapest of your addresses; import duties / "
+        lines += ["", "<i>🚚 = price + shipping to each of your addresses as quoted by eBay (✗ = seller does not ship "
+                  "there); bold = cheapest. Import duties / "
                   "VAT not included." + (" ⚠️ " + ", ".join(d["err"]) + " did not answer." if d.get("err") else "")
                   + "</i>"]
         kb = []
@@ -986,6 +1035,7 @@ class Bot:
             if not d:
                 return await self.tg.edit(chat, mid, "This eBay search expired — run /ebay again.")
             if what == "p":
+                await self._ebay_fill(sid, int(parts[3]))
                 text, markup = self._ebay_page(sid, int(parts[3]))
             elif what == "h":
                 text, markup = self._ebay_how(sid)
