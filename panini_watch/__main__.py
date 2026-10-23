@@ -169,6 +169,8 @@ async def cmd_run(args) -> int:
     bot = Bot(tg, cfg, store, fetcher, monitor)
     tr, fx = await _services(store)
     monitor.tr = bot.tr = tr
+    from .ebay import EbayClient
+    bot.ebay = EbayClient(dest=(cfg.raw.get("destination") or "AE"))
 
     first_run = store.get("baseline_announced") is None
 
@@ -223,6 +225,8 @@ async def cmd_tick(args) -> int:
     bot = Bot(tg, cfg, store, fetcher, monitor)
     tr, fx = await _services(store)
     monitor.tr = bot.tr = tr
+    from .ebay import EbayClient
+    bot.ebay = EbayClient(dest=(cfg.raw.get("destination") or "AE"))
     log = logging.getLogger("panini")
     log.info("tick: budget %ds, chat %s", args.budget, chat or "(none yet)")
 
@@ -263,6 +267,37 @@ async def cmd_shipcheck(args) -> int:
         await f.close()
     ok = [k for k, v in res.items() if v["ships"]]
     print(f"\nShips to {dest}: {ok or 'none'}")
+    return 0
+
+
+async def cmd_ebay(args) -> int:
+    """Console eBay search (same engine as the bot)."""
+    from .ebay import MARKETS, EbayClient, find
+    _env()                                        # loads .env (eBay keys)
+    cfg, store = _load()
+    tr, _fx = await _services(store)
+    client = EbayClient(dest=(cfg.raw.get("destination") or "AE"))
+    if not client.configured:
+        print("Set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET in .env first (free eBay developer keys).")
+        return 1
+    try:
+        out = await find(client, args.query, tr=tr, auctions=args.auctions,
+                         dests=[d.upper() for d in (cfg.raw.get("ebay_destinations") or ["AE"])],
+                         europe=(cfg.raw.get("ebay_europe") or "DE").upper())
+    finally:
+        await client.close()
+        await tr.close()
+    print("Understood:", out.intent.summary())
+    for mk, qs in out.queries.items():
+        print(f"  {MARKETS[mk][2]:12} {qs}")
+    print(f"{out.listings} listings, {len(out.matches)} match:")
+    for m in out.matches[: args.limit]:
+        it = m.item
+        tot = f"${m.total_usd:,.2f}" if m.total_usd is not None else "?"
+        print(f"  {tot:>10} to {m.dest}  {it.price:>8.2f} {it.currency} + {it.ship if it.ship is not None else '?'} "
+              f"{it.ship_currency:3} {MARKETS[it.market][2]:12} {it.title[:80]}" + (f"  (missing {m.missing_soft})"
+                                                                                       if m.missing_soft else "")
+              + (f"  [{m.note}]" if m.note else ""))
     return 0
 
 
@@ -353,6 +388,10 @@ def main() -> None:
     p = sub.add_parser("shipcheck", help="test which shops really ship to your country (weekly in the cloud)")
     p.add_argument("--country", help="ISO code, default from config.yaml (AE)")
     p.add_argument("--site", action="append")
+    p = sub.add_parser("ebay", help="search every eBay site (cheapest delivered)")
+    p.add_argument("query")
+    p.add_argument("--auctions", action="store_true")
+    p.add_argument("--limit", type=int, default=10)
     p = sub.add_parser("search", help="live search from the console")
     p.add_argument("term")
     p.add_argument("--site", action="append")
@@ -366,7 +405,7 @@ def main() -> None:
         for stream in (sys.stdout, sys.stderr):
             if stream is not None:
                 stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
-    fn = {"setup": cmd_setup, "run": cmd_run, "tick": cmd_tick, "shipcheck": cmd_shipcheck, "scan": cmd_scan, "search": cmd_search,
+    fn = {"setup": cmd_setup, "run": cmd_run, "tick": cmd_tick, "shipcheck": cmd_shipcheck, "ebay": cmd_ebay, "scan": cmd_scan, "search": cmd_search,
           "discover": cmd_discover, "sites": cmd_sites}[args.cmd]
     try:
         raise SystemExit(asyncio.run(fn(args)))
