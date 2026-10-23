@@ -23,6 +23,7 @@ log = logging.getLogger("panini.bot")
 
 COMMANDS = [
     ("search", "Search every shop live (or just type what you want)"),
+    ("ebay", "Search every eBay site — cheapest delivered to the UAE"),
     ("compare", "Compare one product's price across all shops"),
     ("browse", "Navigate shops → categories → products"),
     ("new", "Newest products we spotted (e.g. /new es 3)"),
@@ -50,6 +51,8 @@ HELP = (
     "<b>Commands</b>\n"
     "/search <i>words</i> · /stock <i>words</i> (in stock only)\n"
     "/compare <i>product</i> — same product in every shop, cheapest first (asks which version)\n"
+    "/ebay <i>anything</i> — searches 14 eBay sites in 7 languages, cheapest delivered to the UAE\n"
+    "   e.g. <code>/ebay Panini 2022 world cup complete album hardcover</code>\n"
     "/browse — shops → categories → products\n"
     "/deals [shop] — everything currently on discount\n"
     "/new [shop] [days] — newest finds (<code>/new es 3</code>)\n"
@@ -91,6 +94,7 @@ class Bot:
         self.monitor.notify = self.notify
         self.monitor.notify_batch = self.notify_batch
         self.tr = None        # i18n.Translator (set by the app)
+        self.ebay = None      # ebay.EbayClient (set by the app)
 
     # ------------------------------------------------------------------------------------------
     # auth
@@ -262,6 +266,9 @@ class Bot:
         if self.awaiting == "watch":
             self.awaiting = None
             return await self.cmd_watch(chat, text)
+        if self.awaiting == "ebay":
+            self.awaiting = None
+            return await self.cmd_ebay(chat, text)
         if self.awaiting == "compare":
             self.awaiting = None
             return await self.cmd_compare(chat, text)
@@ -286,6 +293,7 @@ class Bot:
     def _main_menu(self) -> dict:
         return keyboard([
             [button("🔎 Search", data="m:search"), button("⚖️ Compare", data="m:compare")],
+            [button("🛒 eBay search", data="m:ebay")],
             [button("🧭 Browse", data="m:browse")],
             [button("🆕 Newest finds", data="m:new"), button("🏷 Deals", data="m:deals")],
             [button("✅ In stock", data="m:stock"), button("🏪 Shops", data="m:sites")],
@@ -368,6 +376,135 @@ class Bot:
         rows = [(s, p) for s, p in rows if not any(w in football._norm(p.name) for w in skip)]
         rows.sort(key=lambda sp: order.get(sp[0].key, 99))
         return rows, errors
+
+    # ---- eBay --------------------------------------------------------------------------------
+    async def cmd_ebay(self, chat, arg: str) -> None:
+        q = arg.strip()
+        if not self.ebay or not self.ebay.configured:
+            return await self.tg.send(
+                "🛒 <b>eBay search is not connected yet.</b>\nIt needs free eBay developer keys "
+                "(App ID + Cert ID). Once they are added I can search every eBay site for you.", chat_id=chat)
+        if not q:
+            self.awaiting = "ebay"
+            return await self.tg.send(
+                "🛒 <b>eBay</b> — what are you looking for? Write it any way you like, e.g.\n"
+                "<code>Panini 2022 world cup complete album hardcover</code>\n"
+                "<code>Panini 2014 world cup swiss box</code>\n"
+                "I search 14 eBay sites in their own languages and show the cheapest that ship to "
+                f"{self._dest_name()}, shipping included.", chat_id=chat)
+        await self._ebay_run(chat, q)
+
+    async def _ebay_run(self, chat, q: str, *, auctions: bool = False, message_id: int | None = None) -> None:
+        from . import ebay as EB
+        head = f"🛒 Searching eBay for <b>{esc(q)}</b>" + (" (incl. auctions)" if auctions else "") + "…"
+        if message_id:
+            await self.tg.edit(chat, message_id, head)
+            mid = message_id
+        else:
+            mid = (await self.tg.send(head, chat_id=chat))["message_id"]
+        last = [0.0]
+
+        async def progress(done: int, total: int) -> None:
+            if time.time() - last[0] > 4 and done < total:
+                last[0] = time.time()
+                try:
+                    await self.tg.edit(chat, mid, f"{head}\n{done}/{total} eBay sites done")
+                except TelegramError:
+                    pass
+        try:
+            dests = [d.upper() for d in (self.cfg.raw.get("ebay_destinations") or [self._dest_code()])]
+            europe = (self.cfg.raw.get("ebay_europe") or "DE").upper()
+            out = await EB.find(self.ebay, q, tr=self.tr, auctions=auctions, progress=progress, dests=dests,
+                                europe=europe)
+        except EB.EbayNotConfigured:
+            return await self.tg.edit(chat, mid, "🛒 eBay search is not connected yet (missing developer keys).")
+        except Exception as e:                                   # noqa: BLE001
+            log.exception("ebay search failed")
+            return await self.tg.edit(chat, mid, f"⚠️ eBay search failed: {esc(str(e)[:200])}")
+        rows = []
+        for m in out.matches[:40]:
+            it = m.item
+            rows.append({"t": it.title, "u": it.url, "mk": it.market, "p": it.price, "c": it.currency,
+                         "s": it.ship, "sc": it.ship_currency, "tot": m.total_usd, "su": m.ship_usd,
+                         "cond": it.condition, "loc": it.location, "fb": it.seller_pct, "fs": it.seller_score,
+                         "auc": "AUCTION" in it.buying and "FIXED_PRICE" not in it.buying, "bids": it.bids,
+                         "miss": m.missing_soft, "d": m.dest, "alts": m.alts, "note": m.note})
+        sid = format(next(self._ids), "x")
+        data = {"q": q, "auctions": auctions, "r": rows, "n": out.listings, "sum": out.intent.summary(),
+                "qs": out.queries, "err": out.errors, "sites": len(out.queries), "dests": dests, "eu": europe,
+                "plan": out.plan}
+        self.store.set_json(f"eb.{sid}", data)
+        idx = (self.store.get_json("eb.index", []) or []) + [sid]
+        for old in idx[:-10]:
+            self.store.set(f"eb.{old}", "")
+        self.store.set_json("eb.index", idx[-10:])
+        text, markup = self._ebay_page(sid, 0)
+        await self.tg.edit(chat, mid, text, markup=markup)
+
+    def _ebay_page(self, sid: str, page: int, per: int = 5) -> tuple[str, dict]:
+        from . import ebay as EB
+        d = self.store.get_json(f"eb.{sid}")
+        rows = d["r"]
+        pages = max(1, (len(rows) + per - 1) // per)
+        page = min(max(page, 0), pages - 1)
+        lines = [f"🛒 <b>eBay: {esc(d['q'])}</b>", f"🧠 {esc(d['sum'])}",
+                 f"🌍 {d['sites']} eBay sites · {d['n']} listings checked · <b>{len(rows)} match</b> · "
+                 f"each ships to " + " / ".join(EB.dest_label(x, d.get('eu', 'DE')) for x in d.get('dests', ['AE'])),
+                 ""]
+        if not rows:
+            lines.append("Nothing matched exactly. Try fewer words, or tap “How I searched”.")
+        medals = ["🥇", "🥈", "🥉"]
+        for i, r in enumerate(rows[page * per:(page + 1) * per], start=page * per):
+            alts = " · also to " + ", ".join(f"{EB.dest_label(k, d.get('eu', 'DE'))} ≈ ${v:,.0f}"
+                                             for k, v in sorted((r.get("alts") or {}).items(), key=lambda kv: kv[1]))                 if r.get("alts") else ""
+            if r.get("miss") and (i == 0 or not rows[i - 1].get("miss")):
+                lines.append(f"— <i>close matches (title does not say: {esc(', '.join(r['miss']))})</i> —")
+            lang, mflag, domain = EB.MARKETS.get(r["mk"], ("", "🌐", "ebay"))
+            mark = medals[i] if i < 3 else f"{i + 1}."
+            to = EB.dest_label(r.get("d") or "AE", d.get("eu", "DE"))
+            tot = f"≈ ${r['tot']:,.0f} delivered to {to}" if r["tot"] is not None else "price"
+            est = "" if r["su"] is not None else " (shipping est.)"
+            ship = (f" + {r['s']:,.2f} {r['sc']} shipping" if r["s"] else " + free shipping") if r["s"] is not None \
+                else " + shipping at checkout"
+            seller = f" · ⭐ {r['fb']}%" if r.get("fb") else ""
+            loc = f" · 📍{EB.COUNTRY_FLAG.get(r['loc'], r['loc'])}" if r.get("loc") else ""
+            auc = f" · 🔨 auction ({r['bids'] or 0} bids)" if r.get("auc") else ""
+            lines.append(f'{mark} <b>{tot}</b>{est} · <a href="{esc_attr(r["u"])}">{esc(r["t"][:95])}</a>')
+            lines.append(f"      {mflag} {domain} · {r['p']:,.2f} {esc(r['c'])}{ship} · {esc(r.get('cond') or '')}"
+                         f"{loc}{seller}{auc}{alts}")
+            if r.get("note"):
+                lines.append(f"      📦 <i>{esc(r['note'])}</i>")
+        lines += ["", "<i>Total = price + shipping as quoted by eBay to the cheapest of your addresses; import duties / "
+                  "VAT not included." + (" ⚠️ " + ", ".join(d["err"]) + " did not answer." if d.get("err") else "")
+                  + "</i>"]
+        kb = []
+        nav = []
+        if page > 0:
+            nav.append(button("◀ Cheaper", data=f"eb:{sid}:p:{page - 1}"))
+        if page < pages - 1:
+            nav.append(button(f"➕ Next {per}", data=f"eb:{sid}:p:{page + 1}"))
+        if nav:
+            kb.append(nav)
+        kb.append([button("🛍 Buy-it-now only" if d.get("auctions") else "🔨 Include auctions", data=f"eb:{sid}:a"),
+                   button("🧠 How I searched", data=f"eb:{sid}:h")])
+        return "\n".join(lines), keyboard(kb)
+
+    def _ebay_how(self, sid: str) -> tuple[str, dict]:
+        from . import ebay as EB
+        d = self.store.get_json(f"eb.{sid}")
+        plan: dict[str, list[str]] = {}
+        for mk, dst in d.get("plan") or []:
+            plan.setdefault(mk, []).append(dst)
+        lines = [f"🧠 <b>How I searched “{esc(d['q'])}”</b>", f"Understood as: {esc(d['sum'])}", "",
+                 "Each eBay site was searched in its own language, only for items that ship to your addresses "
+                 "(sorted by price + shipping there):"]
+        for mk, qs in d["qs"].items():
+            lang, flag, domain = EB.MARKETS.get(mk, ("", "🌐", mk))
+            to = " → " + " ".join(EB.dest_label(x, d.get("eu", "DE")).split()[0] for x in plan.get(mk, []))                 if plan.get(mk) else ""
+            lines.append(f"{flag} {domain}{to}: " + " | ".join(f"<code>{esc(x)}</code>" for x in qs))
+        lines += ["", "Then every title was checked in all languages: wrong year / empty album / single stickers / "
+                  "reprints are dropped, and the same listing seen on several sites is counted once."]
+        return "\n".join(lines)[:4000], keyboard([[button("⬅️ Back to results", data=f"eb:{sid}:b")]])
 
     # ---- compare -----------------------------------------------------------------------------
     async def cmd_compare(self, chat, arg: str) -> None:
@@ -631,6 +768,9 @@ class Bot:
     # ---- shipping ----------------------------------------------------------------------------
     _DEST_NAMES = {"AE": "the UAE", "SA": "Saudi Arabia", "QA": "Qatar", "KW": "Kuwait", "BH": "Bahrain", "OM": "Oman"}
 
+    def _dest_code(self) -> str:
+        return (self.store.get("ship.dest") or self.cfg.raw.get("destination") or "AE").upper()
+
     def _dest_name(self) -> str:
         code = (self.store.get("ship.dest") or self.cfg.raw.get("destination") or "AE").upper()
         return self._DEST_NAMES.get(code, code)
@@ -804,6 +944,8 @@ class Bot:
                 return await self.tg.send("What should I look for (in-stock only)?", chat_id=chat)
             if what == "compare":
                 return await self.cmd_compare(chat, "")
+            if what == "ebay":
+                return await self.cmd_ebay(chat, "")
             if what == "browse":
                 return await self.cmd_browse(chat, "", mid)
             if what == "new":
@@ -838,6 +980,20 @@ class Bot:
                 if sid.isdigit():
                     self.store.remove_source(int(sid))
             return await self.cmd_watchlist(chat, "", mid)
+        elif head == "eb":
+            sid, what = parts[1], parts[2]
+            d = self.store.get_json(f"eb.{sid}")
+            if not d:
+                return await self.tg.edit(chat, mid, "This eBay search expired — run /ebay again.")
+            if what == "p":
+                text, markup = self._ebay_page(sid, int(parts[3]))
+            elif what == "h":
+                text, markup = self._ebay_how(sid)
+            elif what == "a":                                # re-run with / without auctions
+                return await self._ebay_run(chat, d["q"], auctions=not d.get("auctions"), message_id=mid)
+            else:
+                text, markup = self._ebay_page(sid, 0)
+            return await self.tg.edit(chat, mid, text, markup=markup)
         elif head == "cp":
             sid, what = parts[1], parts[2]
             if not self.store.get_json(f"cmp.{sid}"):
