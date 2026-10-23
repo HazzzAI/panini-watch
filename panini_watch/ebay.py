@@ -120,6 +120,7 @@ class Match:
     score: float
     missing_soft: list[str] = field(default_factory=list)
     note: str = ""
+    options: dict = field(default_factory=dict)       # destination -> delivered USD, None = does not ship there
     dest: str = ""                                    # cheapest destination for this listing
     alts: dict = field(default_factory=dict)          # other destinations it ships to -> delivered USD
 
@@ -175,6 +176,36 @@ class EbayClient:
         self._token, self._token_exp = d["access_token"], time.time() + int(d.get("expires_in", 7200))
         return self._token
 
+    async def ship_quote(self, item_id: str, market: str, dest: str) -> tuple[float, str] | None:
+        """Cheapest shipping of one listing to `dest` -> (cost, currency); None if the seller does not ship there."""
+        key = ("ship", item_id, dest)
+        hit = self._cache.get(key)
+        if hit and time.time() - hit[0] < 1800:
+            return hit[1]
+        for attempt in range(3):
+            headers = {"Authorization": f"Bearer {await self.token()}", "X-EBAY-C-MARKETPLACE-ID": market,
+                       "X-EBAY-C-ENDUSERCTX": f"contextualLocation=country%3D{dest}"}
+            async with self._sem:
+                r = await self._http.get(f"{self.base}/buy/browse/v1/item/{item_id}", headers=headers)
+            if r.status_code == 401 and attempt == 0:
+                self._token = None
+                continue
+            if r.status_code in (429, 500, 502, 503) and attempt < 2:
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+            if r.status_code != 200:
+                return None
+            best = None
+            for opt in r.json().get("shippingOptions") or []:
+                cost = opt.get("shippingCost") or {}
+                if cost.get("value") is not None:
+                    v = float(cost["value"])
+                    if best is None or v < best[0]:
+                        best = (v, cost.get("currency", ""))
+            self._cache[key] = (time.time(), best)
+            return best
+        return None
+
     async def search(self, market: str, q: str, *, limit: int = 100, auctions: bool = False,
                      dest: str | None = None) -> list[EbayItem]:
         dest = dest or self.dest
@@ -206,6 +237,34 @@ class EbayClient:
             self._cache[key] = (time.time(), items)
             return items
         return []
+
+
+def _usd(v: float | None, cur: str) -> float | None:
+    from . import models
+    if v is None:
+        return None
+    if cur == "USD":
+        return v
+    return models.FX.to_usd(v, cur) if models.FX else None
+
+
+async def fill_destinations(client: "EbayClient", matches: list[Match], dests: list[str]) -> None:
+    """Ask eBay, per listing, what shipping costs to each of your addresses that was not searched directly."""
+    async def one(m: Match, d: str) -> None:
+        q = await client.ship_quote(m.item.item_id, m.item.market, d)
+        if q is None:
+            m.options[d] = None
+        else:
+            cost, cur = q
+            s = _usd(cost, cur)
+            m.options[d] = (m.price_usd + s) if (m.price_usd is not None and s is not None) else None
+    await asyncio.gather(*[one(m, d) for m in matches for d in dests if d not in m.options])
+    for m in matches:
+        avail = {d: v for d, v in m.options.items() if v is not None}
+        if avail:
+            m.dest = min(avail, key=avail.get)
+            m.total_usd = avail[m.dest]
+        m.alts = {d: v for d, v in avail.items() if d != m.dest}
 
 
 async def find(client: EbayClient, user_query: str, *, tr=None, markets: list[str] | None = None,
@@ -300,6 +359,11 @@ async def find(client: EbayClient, user_query: str, *, tr=None, markets: list[st
             best[lid] = m
     matches = list(best.values())
     for m in matches:
-        m.alts = {d: t for d, t in options[m.item.legacy_id].items() if d != m.dest and t is not None}
-    matches.sort(key=lambda m: (bool(m.missing_soft), m.total_usd if m.total_usd is not None else 1e12, -m.score))
+        m.options = dict(options[m.item.legacy_id])
+        m.alts = {d: t for d, t in m.options.items() if d != m.dest and t is not None}
+    key = lambda m: (bool(m.missing_soft), m.total_usd if m.total_usd is not None else 1e12, -m.score)
+    matches.sort(key=key)
+    # the best candidates: get the real price to EVERY one of your addresses, then rank again
+    await fill_destinations(client, matches[:15], dests)
+    matches.sort(key=key)
     return SearchOutcome(intent, queries, total, matches, sorted(set(errors)), plan)
