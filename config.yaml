@@ -4,6 +4,10 @@
 # Only shops that really ship here are used (tested at checkout: python -m panini_watch shipcheck)
 destination: AE
 
+# eBay: a listing is fine if it ships to ANY of these addresses (UAE, USA, Germany, UK); each listing is
+# ranked by its cheapest one. UAE is checked on every eBay site, USA on .com/.ca, Germany/UK on European sites.
+ebay_destinations: [AE, US, DE, GB]
+
 check_interval_minutes: 10      # how often every enabled shop is re-checked
 page_delay_seconds: [1.0, 2.5]  # polite pause between two page loads on the same shop
 sites_in_parallel: 5            # shops scanned at the same time (each shop still gets one page at a time)
