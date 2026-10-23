@@ -45,7 +45,8 @@ Single "missing card" listings (`cartas faltantes`, `mancanti`, …) are ignored
 
 | You type | What happens |
 |---|---|
-| `world cup` | live search on every enabled shop, ✅/❌ stock, price, link; buttons: in-stock only, by shop, pages |
+| *just type*, e.g. `panini 2022 world cup complete album hardcover` | searches **eBay** (14 sites, delivered price to UAE / USA / Germany / UK) **and** the official Panini shops; `/search …` = shops only |
+| `/search world cup` | live search on every enabled shop, ✅/❌ stock, price, link; buttons: in-stock only, by shop, pages |
 | `megacracks @es` | search only the Spanish shop (`@es @it @uk …`) |
 | `/compare Calciatori 2024-2025` | **Compare**: finds that product in every shop, asks which *version* you want (e.g. 📦 Box · 100 packs, 📘 Album, 🎁 Bundle …), then lists the shops **cheapest first** with USD prices and how much you save; ✅ in-stock-only toggle |
 | `/ebay Panini 2022 world cup complete album hardcover` | **eBay search**: understands what you mean (tournament, year, album/box, complete, hardcover, Swiss/German/… edition), writes it the way sellers do on **14 eBay sites in 7 languages** (ebay.com, .co.uk, .de, .it, .es, .fr, .nl, .be, .at, .ch, .ie, .pl, .com.au, .ca), keeps only listings that **ship to the UAE, USA, Germany or UK** (ranked by the cheapest of those), drops empty albums / single stickers / reprints / wrong years, and lists the **cheapest delivered (price + shipping) in USD**. Buttons: next 5, include auctions, “how I searched”. |
